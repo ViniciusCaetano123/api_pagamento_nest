@@ -6,11 +6,13 @@ import { LoginDto } from './dto/login.dto';
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
   
-  @Post('login')
+  @Post('signin')
   @HttpCode(HttpStatus.OK) 
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true })) 
-  async login(@Body() loginDto: LoginDto): Promise<any> {
+  async login(@Body() loginDto: LoginDto) {
+
     const userData = await this.authService.login(loginDto);
+
     return {
         statusCode: HttpStatus.OK,
         message: 'Login bem-sucedido!',
@@ -18,3 +20,4 @@ export class AuthController {
     };
   }
 }
+

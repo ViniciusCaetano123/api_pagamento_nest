@@ -1,0 +1,30 @@
+
+SELECT * FROM Cursos.Usuario
+SELECT * FROM Cursos.Curso
+SELECT * FROM Cursos.Comprovante
+
+SELECT * FROM Pagamento.CarrinhosV2
+SELECT * FROM Pagamento.[Carrinhos.Cursos]
+
+
+CREATE TABLE Pagamento.[Carrinhos.Cursos](
+    id INT IDENTITY(1,1) NOT NULL,
+    id_curso INT NOT NULL,
+    id_carrinho INT NOT NULL,
+    id_usuario UNIQUEIDENTIFIER NULL,
+
+  
+    CONSTRAINT PK_Pagamento_Carrinhos_Cursos_id PRIMARY KEY CLUSTERED (id ASC),
+
+   
+    CONSTRAINT FK_CarrinhosCursos_Curso FOREIGN KEY (id_curso)
+    REFERENCES Cursos.Curso (id),
+
+    
+    CONSTRAINT FK_CarrinhosCursos_CarrinhoV2 FOREIGN KEY (id_carrinho)
+    REFERENCES Pagamento.CarrinhosV2 (id),
+
+  
+    CONSTRAINT FK_CarrinhosCursos_Usuario FOREIGN KEY (id_usuario)
+    REFERENCES Cursos.Usuario (id)
+);

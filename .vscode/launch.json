@@ -1,0 +1,22 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "type": "node",
+        "request": "launch",
+        "name": "NestJS Debug",
+        "args": ["${workspaceFolder}/src/main.ts"], // Ou 'dist/main.js' se você compilar antes de debugar
+        "runtimeArgs": ["--nolazy", "-r", "ts-node/register", "-r", "tsconfig-paths/register"],
+        "sourceMaps": true,
+        "cwd": "${workspaceFolder}",
+        "protocol": "inspector",
+        "internalConsoleOptions": "openOnSessionStart",
+        "envFile": "${workspaceFolder}/.env", // Certifique-se de que seu arquivo .env está sendo carregado
+        "console": "integratedTerminal", // Para ver os logs no terminal do VS Code
+        "skipFiles": [
+          "<node_internals>/**",
+          "node_modules/**"
+        ]
+      }
+    ]
+  }
