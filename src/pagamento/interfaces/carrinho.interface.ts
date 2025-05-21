@@ -11,6 +11,16 @@ export interface ICarrinhoItem {
     fechado: boolean;
   }
   
+export interface InsertCarrinhoParams {
+    idUsuario: string;
+    totalOriginal: number;
+    methodoPagamento: string;
+    cursos: ICarrinhoDetalhado[]; 
+    isCpf: boolean;
+    valorFinalComDesconto: number;
+    nomeCupomAplicado?: string;
+    valorDescontoCupom?: number;
+  }
   export interface ICarrinhoRequest {
     nomeCupom: string;
     carrinho: ICarrinhoItem[];

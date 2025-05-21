@@ -1,25 +1,32 @@
+// src/pagamento/controllers/pagamento.controller.ts
 import {
     Controller,
     Post,
     Req,
-    Res,    
+    Res,
     UseInterceptors,
     UploadedFile,
     UseGuards,
     HttpStatus,
-    
+    Body, // Adicionado para tipar o corpo da requisição explicitamente
+    BadRequestException, // Adicionado para tratar erros de forma consistente
   } from '@nestjs/common';
   import { FileInterceptor } from '@nestjs/platform-express';
   import { AuthGuard } from '@nestjs/passport';
   import { PagamentoService } from './pagamento.service';
-  import { Request, Response } from 'express'; 
+  import { Request, Response } from 'express';
   
-
   interface AuthenticatedRequest extends Request {
     user: {
       id: string;
-      documento: string;
+      documento: string; // CPF ou CNPJ do usuário logado
     };
+  }
+  
+  // DTO para o corpo da requisição do carrinho
+  class CarrinhoPayloadDto {
+    nomeCupom?: string; // Cupom é opcional
+    carrinho: { curso: number; quantidade: number }[];
   }
   
   @Controller('dashboard/pagamento')
@@ -28,67 +35,75 @@ import {
   
     @Post('carrinho')
     @UseGuards(AuthGuard('jwt-client'))
-    async carrinhoCursos(@Req() req: AuthenticatedRequest, @Res() res: Response) {
+    async carrinhoCursos(
+      @Req() req: AuthenticatedRequest,
+      @Res() res: Response,
+      @Body() payload: CarrinhoPayloadDto, // Usar o DTO para validação e tipagem
+    ) {
       try {
-       
         const usuario = req.user;
+        const { nomeCupom, carrinho } = payload;
   
-        const { nomeCupom, carrinho } = req.body;
-       
-        if (carrinho.length == 0) { 
-          return res.status(HttpStatus.OK).json({ sucesso: false, mensagens: ["Nenhum curso no carrinho"], dados: null }); 
-        }
-  
-        const isCpf = usuario.documento.length == 11; 
-        if (isCpf) { 
-          const temMaiorUm = carrinho.findIndex(e=> e.quantidade >=2); 
-          if (temMaiorUm != -1) { 
-            return res.status(HttpStatus.OK).json({ sucesso: false, mensagens: ["Não é possivel compra dois curso para o mesmo usuário"], dados: null }); 
-          }
-        }
+        // A lógica de validação do carrinho (vazio, quantidade por CPF)
+        // foi movida para o PagamentoService.processarCarrinho
   
         const resultadoCarrinho = await this.pagamentoService.processarCarrinho(
           nomeCupom,
           usuario.id,
+          usuario.documento, // Passar o documento do usuário para o serviço
           carrinho,
-          isCpf,
         );
   
-        const pixMessage = `<div>Realize o PIX para o CNPJ: <strong>08.297.075/0001-98</strong> e envia o comprovante</strong></div>`; 
+        // A mensagem PIX pode ser mais dinâmica ou vir de uma configuração, se necessário
+        const pixMessage = `<div>Realize o PIX para o CNPJ: <strong>08.297.075/0001-98</strong> e envie o comprovante.</div>`;
   
         return res.status(HttpStatus.OK).json({
           sucesso: true,
-          mensagens: [],
+          mensagens: resultadoCarrinho.cupomMensagem.mensagem ? [resultadoCarrinho.cupomMensagem.mensagem] : [], // Adiciona mensagem do cupom se houver
           dados: {
             metodoPagamento: "pix",
             idCarrinhoToken: resultadoCarrinho.idCarrinhoToken,
-            mensagem: pixMessage,
-            cupom: resultadoCarrinho.cupomMensagem,
+            mensagemPix: pixMessage, // Renomeado para clareza
+            cupom: { // Estrutura do cupom mais detalhada
+              aplicado: !!resultadoCarrinho.cupomMensagem.nomeCupomAplicado,
+              nome: resultadoCarrinho.cupomMensagem.nomeCupomAplicado,
+              valorTotalComDesconto: resultadoCarrinho.cupomMensagem.valorTotal,
+              descontoConcedido: resultadoCarrinho.cupomMensagem.descontoAplicado,
+              mensagemValidacao: resultadoCarrinho.cupomMensagem.mensagem,
+            }
           },
         });
       } catch (error) {
-        console.error("Erro ao finalizar a compra:", error); 
-        return res.status(HttpStatus.BAD_REQUEST).json({ sucesso: false, mensagens: ["Erro ao finalizar a compra"], dados: null }); 
+        console.error("Erro ao finalizar a compra:", error);
+        if (error instanceof BadRequestException) {
+          return res.status(HttpStatus.BAD_REQUEST).json({ sucesso: false, mensagens: [error.message], dados: null });
+        }
+        // Para outros tipos de erro, uma mensagem genérica
+        return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ sucesso: false, mensagens: ["Erro interno ao processar o carrinho."], dados: null });
       }
     }
   
     @Post('comprovante')
-    @UseGuards(AuthGuard('jwt-client')) 
-    @UseInterceptors(FileInterceptor('file')) 
+    @UseGuards(AuthGuard('jwt-client'))
+    @UseInterceptors(FileInterceptor('file'))
     async uploadComprovante(
       @Req() req: AuthenticatedRequest,
       @Res() res: Response,
-      @UploadedFile() file: Express.Multer.File, // O arquivo uploaded pelo Multer
+      @UploadedFile() file: Express.Multer.File,
     ) {
       try {
         const usuario = req.user;
+        // O token do carrinho agora é esperado no corpo da requisição,
+        // pois o FileInterceptor pode não lidar bem com multipart/form-data e outros campos de texto de forma consistente
+        // dependendo da configuração do cliente. É mais robusto esperar no body.
         const { idCarrinhoToken } = req.body;
   
-        if (!file) { 
-          return res.status(HttpStatus.BAD_REQUEST).json({ sucesso: false, mensagens: ["Comprovante não enviado"], dados: null });
+        if (!file) {
+          // Esta validação pode ser feita pelo `ParseFilePipe` do NestJS para ser mais declarativa
+          throw new BadRequestException("Comprovante não enviado.");
         }
-        if (!idCarrinhoToken) { 
-          return res.status(HttpStatus.BAD_REQUEST).json({ sucesso: false, mensagens: ["Carrinho não encontrado"], dados: null }); 
+        if (!idCarrinhoToken) {
+          throw new BadRequestException("Token do carrinho não fornecido.");
         }
   
         await this.pagamentoService.processarUploadComprovante(
@@ -97,18 +112,28 @@ import {
           idCarrinhoToken,
         );
   
-        const linkCursos = usuario.documento.length >=14 ? 'https://www.cursoslefisc.com.br/novocurso/dashboard/vincular/curso' : 'https://www.cursoslefisc.com.br/novocurso/dashboard/meuscursos'; 
+        const linkCursos = usuario.documento.length >= 14 ? 'https://www.cursoslefisc.com.br/novocurso/dashboard/vincular/curso' : 'https://www.cursoslefisc.com.br/novocurso/dashboard/meuscursos';
   
-        const htmlLinkCursos = `<a style="padding: 15px 25px;
-          color: #fff;
-          background: rgb(225, 118, 42, 1);
-          border-radius: 5px;
-          display: block;" href="${linkCursos}" target="_blank"> Acessar Cursos </a>`; 
+        const htmlLinkCursos = `<p>Seu comprovante foi enviado e está em análise.</p>
+                                <a style="padding: 15px 25px;
+                                  color: #fff;
+                                  background: rgb(225, 118, 42); /* Cor sólida */
+                                  border-radius: 5px;
+                                  display: inline-block; /* Melhor para links com padding */
+                                  text-decoration: none; /* Remover sublinhado padrão */
+                                  margin-top: 10px;"
+                                  href="${linkCursos}" target="_blank">Acessar Cursos</a>`;
   
-        return res.status(HttpStatus.OK).json({ sucesso: true, mensagens: ["Comprovante em analise", htmlLinkCursos], dados: null }); 
+        // A resposta agora envia um array de mensagens, que pode incluir o HTML.
+        // O frontend precisará saber como renderizar mensagens que contêm HTML.
+        return res.status(HttpStatus.OK).json({ sucesso: true, mensagens: ["Comprovante em análise.", htmlLinkCursos], dados: null });
       } catch (error) {
-        console.error('Erro ao enviar comprovante:', error); 
-        return res.status(HttpStatus.BAD_REQUEST).json({ sucesso: false, mensagens: ["Erro ao enviar comprovante"], dados: null }); 
+        console.error('Erro ao enviar comprovante:', error);
+        if (error instanceof BadRequestException) {
+          return res.status(HttpStatus.BAD_REQUEST).json({ sucesso: false, mensagens: [error.message], dados: null });
+        }
+        return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ sucesso: false, mensagens: ["Erro ao enviar comprovante."], dados: null });
       }
     }
   }
+  

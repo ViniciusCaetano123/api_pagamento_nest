@@ -1,14 +1,10 @@
-// src/pagamento/services/pagamento.service.ts
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PagamentoDao } from './pagamento.dao';
-import { promises as fs } from 'fs'; // Para deletar arquivos temporários
-
-const calcularTotal = (cursos: any[]): number => {
-    return cursos.reduce((acc, item) => {
-        return acc + (item.valor || 0) * (item.quantidade || 0);
-    }, 0);
-};
+import { promises as fs } from 'fs';
+import { CupomInfo } from './interfaces/cupom.domain';
+import { ICarrinhoDetalhado, InsertCarrinhoParams, ICarrinhoItem } from './interfaces/carrinho.interface';
+import Cupom from './domain/Cupom';
 
 @Injectable()
 export class PagamentoService {
@@ -16,63 +12,84 @@ export class PagamentoService {
     private readonly pagamentoDao: PagamentoDao,
     private readonly jwtService: JwtService,
   ) {}
-  
 
-  async getCursosPorId(carrinho: { curso: number }[]): Promise<{ cursos: any[]; linhasAfetadas: number }> {
+  private calcularTotal(cursos: ICarrinhoDetalhado[]): number {
+    return cursos.reduce((acc, item) => {
+      return acc + (item.valor || 0) * (item.quantidade || 0);
+    }, 0);
+  }
+
+  async getCursosPorId(carrinho: ICarrinhoItem[]): Promise<ICarrinhoDetalhado[]> {
     try {
       const idsCursos = carrinho.map(item => item.curso);
-      return await this.pagamentoDao.getCursosId(idsCursos);
+      if (idsCursos.length === 0) {
+        return [];
+      }
+      const cursosDoBanco = await this.pagamentoDao.getCursosId(idsCursos);
+      return cursosDoBanco;
     } catch (error) {
       console.error("Erro em PagamentoService.getCursosPorId:", error);
       throw new BadRequestException('Erro ao buscar cursos.');
     }
   }
 
-  async validarCupom(nomeCupom: string, idUsuario: string, cursosComQuantidade: any[]): Promise<{ mensagem: string; valorTotal: number }> {
-    const total = calcularTotal(cursosComQuantidade);
-    const cupomResposta = { mensagem: "", valorTotal: total };
+  async validarCupom(nomeCupomInput: string, idUsuario: string, cursosComQuantidade: ICarrinhoDetalhado[]): Promise<CupomInfo> {
+    const totalOriginal = this.calcularTotal(cursosComQuantidade);
 
-    if (!nomeCupom || nomeCupom?.length === 0) return cupomResposta;
+    const respostaPadrao: CupomInfo = {
+      mensagem: "",
+      valorTotal: totalOriginal,
+      nomeCupomAplicado: "",
+      descontoAplicado: 0,
+    };
+
+    if (!nomeCupomInput || nomeCupomInput.trim().length === 0) {
+      return respostaPadrao;
+    }
+
+    const nomeCupom = nomeCupomInput.trim();
 
     try {
-      const result = await this.pagamentoDao.getCupom(nomeCupom, idUsuario);
-        
-      if (!result || result?.length === 0) {
-        cupomResposta.mensagem = "Cupom não é válido";
-        return cupomResposta;
+      const cupomDataArray = await this.pagamentoDao.getCupom(nomeCupom, idUsuario);
+
+      if (!cupomDataArray || cupomDataArray.length === 0) {
+        return {
+          ...respostaPadrao,
+          mensagem: "Cupom não encontrado ou não aplicável.",
+        };
       }
 
-      const [cupom] = result;
+      const cupomInstance = new Cupom(cupomDataArray[0]);
       const dataAtual = new Date();
+      const validacao = cupomInstance.estaValido(dataAtual, idUsuario);
 
-      if (!cupom.ativo || dataAtual > cupom.vigencia_final) {
-        cupomResposta.mensagem = "Cupom não é válido";
-        return cupomResposta;
+      if (!validacao.valido) {
+        return {
+          ...respostaPadrao,
+          mensagem: validacao.mensagem || "Cupom não é válido",
+        };
       }
 
-      cupomResposta.mensagem = "Cupom válido";
-      const totalBruto   = total - cupom.valor_bruto;
-      cupomResposta.valorTotal = totalBruto;
-      if(cupom.porcentagem_desconto != 0){
-          const totalPorDes = totalBruto * (cupom.porcentagem_desconto / 100); // Ajuste para porcentagem
-          cupomResposta.valorTotal =  totalPorDes;
-      }
-      cupomResposta.valorTotal = Math.max(0, cupomResposta.valorTotal); // Garante que o total não seja negativo
+      const { valorFinal, descontoAplicado } = cupomInstance.calcularValorFinal(totalOriginal);
 
-      return cupomResposta;
+      return {
+        mensagem: "Cupom válido",
+        valorTotal: valorFinal,
+        nomeCupomAplicado: cupomInstance.getNome(),
+        descontoAplicado: descontoAplicado,
+      };
     } catch (error) {
-      console.error("Erro em PagamentoService.validarCupom:", error);
-      throw new BadRequestException('Erro ao validar cupom.');
+      console.error(`Erro ao validar o cupom "${nomeCupom}":`, error);
+      throw new BadRequestException('Ocorreu um erro ao tentar validar o cupom. Tente novamente.');
     }
   }
 
-  async inserirCarrinho(cursosComQuantidade: any[], idUsuario: string, metodoPagamento: string, isCpf: boolean, valorComDesconto: number): Promise<number> {
+  async inserirCarrinho(params: InsertCarrinhoParams): Promise<number> {
     try {
-      const total = calcularTotal(cursosComQuantidade);
-      return await this.pagamentoDao.insertCarrinho(idUsuario, total, metodoPagamento, cursosComQuantidade, isCpf, valorComDesconto);
+      return await this.pagamentoDao.insertCarrinho(params);
     } catch (error) {
       console.error("Erro em PagamentoService.inserirCarrinho:", error);
-      throw new BadRequestException('Erro ao inserir no carrinho.');
+      throw new BadRequestException('Erro ao registrar o carrinho.');
     }
   }
 
@@ -83,58 +100,98 @@ export class PagamentoService {
     try {
       const decodedToken = this.jwtService.decode(idCarrinhoToken) as { id: number };
       if (!decodedToken || typeof decodedToken.id !== 'number') {
+        if (path) {
+          await fs.unlink(path).catch(e => console.error(`Falha ao excluir arquivo temporário (token inválido): ${e.message}`));
+        }
         throw new BadRequestException('Token de carrinho inválido ou corrompido.');
       }
       idCarrinho = decodedToken.id;
     } catch (error) {
       console.error("Erro ao decodificar token de carrinho:", error);
-      throw new BadRequestException('Token de carrinho inválido.');
+      if (path && error instanceof BadRequestException) {
+        await fs.unlink(path).catch(e => console.error(`Falha ao excluir arquivo temporário (erro token): ${e.message}`));
+      }
+      if (!(error instanceof BadRequestException)) {
+        throw new BadRequestException('Token de carrinho inválido.');
+      }
+      throw error;
     }
 
     try {
-      // Inserir informações do arquivo no banco de dados
       await this.pagamentoDao.inserirArquivo(idUsuario, filename, originalname, mimetype, path, size, 1, idCarrinho);
       console.log(`Arquivo ${filename} inserido no banco de dados.`);
-
-      // **IMPORTANTE**: Remover o arquivo temporário após o processamento.
-      // Em produção, você moveria este arquivo para um armazenamento persistente (S3, GCS) aqui.
       await fs.unlink(path).catch(e => console.error(`Falha ao excluir arquivo temporário: ${e.message}`));
-
     } catch (error) {
       console.error(`Erro em PagamentoService.processarUploadComprovante (DB): ${error.message}`);
-      // Em caso de falha na inserção no DB, o arquivo temporário ainda precisa ser removido.
       await fs.unlink(path).catch(e => console.error(`Falha ao excluir arquivo temporário após erro no DB: ${e.message}`));
       throw new BadRequestException('Erro ao salvar informações do comprovante.');
     }
   }
 
-  async processarCarrinho(nomeCupom: string, idUsuario: string, carrinho: any[], isCpf: boolean): Promise<{ idCarrinho: number; cupomMensagem: { mensagem: string; valorTotal: number }; idCarrinhoToken: string }> {
-    const { cursos } = await this.getCursosPorId(carrinho);
+  async processarCarrinho(
+    nomeCupom: string | undefined,
+    idUsuario: string,
+    documentoUsuario: string,
+    carrinhoInput: ICarrinhoItem[],
+  ): Promise<{ idCarrinho: number; cupomMensagem: CupomInfo; idCarrinhoToken: string }> {
+    if (!carrinhoInput || carrinhoInput.length === 0) {
+      throw new BadRequestException("Seu carrinho não possui nenhum curso.");
+    }
 
-    const cursosWithQuantidade = cursos.map(item => {
-      const correspondente = carrinho.find(curso => curso.curso === item.id);
+    const isCpf = documentoUsuario?.length === 11;
+    if (isCpf) {
+      const temCursoComQuantidadeMaiorQueUm = carrinhoInput.some(item => item.quantidade >= 2);
+      if (temCursoComQuantidadeMaiorQueUm) {
+        throw new BadRequestException("Não é possível comprar mais de uma unidade do mesmo curso para o mesmo usuário (CPF).");
+      }
+    }
+
+    const cursosBaseDoBanco = await this.getCursosPorId(carrinhoInput);
+
+    if (cursosBaseDoBanco.length !== carrinhoInput.length && carrinhoInput.length > 0) {
+      const idsInput = new Set(carrinhoInput.map(c => c.curso));
+      const idsBanco = new Set(cursosBaseDoBanco.map(c => c.id));
+      const idsFaltantes = [...idsInput].filter(id => !idsBanco.has(id));
+      if (idsFaltantes.length > 0) {
+        throw new BadRequestException(`Os seguintes cursos não foram encontrados: ${idsFaltantes.join(', ')}.`);
+      }
+      console.warn("Discrepância entre cursos do input e cursos do banco não causada por IDs faltantes.");
+    }
+
+    const cursosComDetalhesEQuantidades: ICarrinhoDetalhado[] = cursosBaseDoBanco.map(cursoDb => {
+      const itemDoInput = carrinhoInput.find(item => item.curso === cursoDb.id);
       return {
-        ...item,
-        quantidade: correspondente ? correspondente.quantidade : 0,
+        ...cursoDb,
+        quantidade: itemDoInput ? itemDoInput.quantidade : 0,
       };
-    });
+    }).filter(curso => curso.quantidade > 0);
 
-    const temCursoInativo = cursos.findIndex(e=> !e.ativo || e.fechado );
-    const qntCursoIsZero = cursosWithQuantidade.findIndex(e => e.quantidade ==0);
-
-    if (qntCursoIsZero != -1) {
-      throw new BadRequestException("Seu carrinho não possui nenhum cursos");
+    if (cursosComDetalhesEQuantidades.length === 0 && carrinhoInput.length > 0) {
+      throw new BadRequestException("Nenhum curso válido com quantidade maior que zero no carrinho.");
     }
 
-    if (temCursoInativo != -1) {
-      const cursoInativo = cursos[temCursoInativo];
-      throw new BadRequestException(`Possui cursos inativos no carrinho: ${cursoInativo.nome}`);
+    const cursoInativoEncontrado = cursosComDetalhesEQuantidades.find(c => !c.ativo || c.fechado);
+    if (cursoInativoEncontrado) {
+      throw new BadRequestException(`O curso "${cursoInativoEncontrado.nome}" está inativo ou fechado e não pode ser adicionado ao carrinho.`);
     }
 
-    const cupomMensagem = await this.validarCupom(nomeCupom.trim(), idUsuario, cursosWithQuantidade);
-    const idCarrinho = await this.inserirCarrinho(cursosWithQuantidade, idUsuario, 'pix', isCpf, cupomMensagem.valorTotal);
+    const cupomInfo = await this.validarCupom(nomeCupom || "", idUsuario, cursosComDetalhesEQuantidades);
+
+    const totalOriginalParaCarrinho = this.calcularTotal(cursosComDetalhesEQuantidades);
+    const paramsInsert: InsertCarrinhoParams = {
+      idUsuario,
+      totalOriginal: totalOriginalParaCarrinho,
+      methodoPagamento: 'pix',
+      cursos: cursosComDetalhesEQuantidades,
+      isCpf,
+      valorFinalComDesconto: cupomInfo.valorTotal,
+      nomeCupomAplicado: cupomInfo.nomeCupomAplicado,
+      valorDescontoCupom: cupomInfo.descontoAplicado,
+    };
+
+    const idCarrinho = await this.inserirCarrinho(paramsInsert);
     const idCarrinhoToken = this.jwtService.sign({ id: idCarrinho });
 
-    return { idCarrinho, cupomMensagem, idCarrinhoToken };
+    return { idCarrinho, cupomMensagem: cupomInfo, idCarrinhoToken };
   }
 }
