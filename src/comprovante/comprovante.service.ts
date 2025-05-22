@@ -15,7 +15,19 @@ export interface EstatisticaMensalComprovante {
     quantidade: number;
     valor_total: number | null;
 }
-
+export interface LogEntry {
+    documento_user: string;
+    email_user: string;
+    nome_admin: string;
+    id_log: number;
+    id_carrinho: number;
+    id_admin: string;
+    status_anterior: string;
+    status_novo: string;
+    created_at_log: string | Date;
+    valor: number;
+    usuario_id: string;
+}
 @Injectable()
 export class ComprovanteService {
 
@@ -172,6 +184,25 @@ export class ComprovanteService {
             const request = this.pool.request();
             const resultado = await request.query(querySQL);
             return resultado.recordset as EstatisticaMensalComprovante[];
+        } catch (error) {
+            throw error;
+        }
+    }
+    async getTopDezAtividadesAdmin() {
+        if (!this.pool) {
+            throw new InternalServerErrorException('Erro na configuração do serviço de estatísticas de comprovantes.');
+        }
+        const querySQL = `
+            SELECT TOP 10 cu.documento AS documento_user, cu.email AS email_user,
+acu.name AS nome_admin,aclc.id AS id_log, aclc.id_carrinho, aclc.id_admin, aclc.status_anterior, aclc.status_novo, aclc.created_at AS created_at_log, pc.valor, pc.usuario_id
+FROM ACL.ComprovanteStatusLog aclc
+JOIN Pagamento.CarrinhosV2 pc ON aclc.id_carrinho = pc.Id
+JOIN ACL.[User] acu ON  aclc.id_admin = acu.id
+JOIN Cursos.Usuario cu ON cu.id = pc.usuario_id ORDER BY aclc.id DESC`;
+        try {
+            const request = this.pool.request();
+            const resultado = await request.query(querySQL);
+            return resultado.recordset as LogEntry[];
         } catch (error) {
             throw error;
         }

@@ -48,21 +48,21 @@ export class PagamentoService {
     }
 
     const nomeCupom = nomeCupomInput.trim();
-
+    console.log(nomeCupom);
     try {
       const cupomDataArray = await this.pagamentoDao.getCupom(nomeCupom, idUsuario);
-
+      console.log(cupomDataArray);
       if (!cupomDataArray || cupomDataArray.length === 0) {
         return {
           ...respostaPadrao,
           mensagem: "Cupom não encontrado ou não aplicável.",
         };
       }
-
+      console.log(cupomDataArray[0]);
       const cupomInstance = new Cupom(cupomDataArray[0]);
       const dataAtual = new Date();
       const validacao = cupomInstance.estaValido(dataAtual, idUsuario);
-
+      console.log(validacao);
       if (!validacao.valido) {
         return {
           ...respostaPadrao,
@@ -134,64 +134,70 @@ export class PagamentoService {
     documentoUsuario: string,
     carrinhoInput: ICarrinhoItem[],
   ): Promise<{ idCarrinho: number; cupomMensagem: CupomInfo; idCarrinhoToken: string }> {
-    if (!carrinhoInput || carrinhoInput.length === 0) {
-      throw new BadRequestException("Seu carrinho não possui nenhum curso.");
-    }
-
-    const isCpf = documentoUsuario?.length === 11;
-    if (isCpf) {
-      const temCursoComQuantidadeMaiorQueUm = carrinhoInput.some(item => item.quantidade >= 2);
-      if (temCursoComQuantidadeMaiorQueUm) {
-        throw new BadRequestException("Não é possível comprar mais de uma unidade do mesmo curso para o mesmo usuário (CPF).");
+    try{
+      if (!carrinhoInput || carrinhoInput.length === 0) {
+        throw new BadRequestException("Seu carrinho não possui nenhum curso.");
       }
-    }
-
-    const cursosBaseDoBanco = await this.getCursosPorId(carrinhoInput);
-
-    if (cursosBaseDoBanco.length !== carrinhoInput.length && carrinhoInput.length > 0) {
-      const idsInput = new Set(carrinhoInput.map(c => c.curso));
-      const idsBanco = new Set(cursosBaseDoBanco.map(c => c.id));
-      const idsFaltantes = [...idsInput].filter(id => !idsBanco.has(id));
-      if (idsFaltantes.length > 0) {
-        throw new BadRequestException(`Os seguintes cursos não foram encontrados: ${idsFaltantes.join(', ')}.`);
+  
+      const isCpf = documentoUsuario?.length === 11;
+      if (isCpf) {
+        const temCursoComQuantidadeMaiorQueUm = carrinhoInput.some(item => item.quantidade >= 2);
+        if (temCursoComQuantidadeMaiorQueUm) {
+          throw new BadRequestException("Não é possível comprar mais de uma unidade do mesmo curso para o mesmo usuário (CPF).");
+        }
       }
-      console.warn("Discrepância entre cursos do input e cursos do banco não causada por IDs faltantes.");
-    }
-
-    const cursosComDetalhesEQuantidades: ICarrinhoDetalhado[] = cursosBaseDoBanco.map(cursoDb => {
-      const itemDoInput = carrinhoInput.find(item => item.curso === cursoDb.id);
-      return {
-        ...cursoDb,
-        quantidade: itemDoInput ? itemDoInput.quantidade : 0,
+  
+      const cursosBaseDoBanco = await this.getCursosPorId(carrinhoInput);
+  
+      if (cursosBaseDoBanco.length !== carrinhoInput.length && carrinhoInput.length > 0) {
+        const idsInput = new Set(carrinhoInput.map(c => c.curso));
+        const idsBanco = new Set(cursosBaseDoBanco.map(c => c.id));
+        const idsFaltantes = [...idsInput].filter(id => !idsBanco.has(id));
+        if (idsFaltantes.length > 0) {
+          throw new BadRequestException(`Os seguintes cursos não foram encontrados: ${idsFaltantes.join(', ')}.`);
+        }
+        console.warn("Discrepância entre cursos do input e cursos do banco não causada por IDs faltantes.");
+      }
+  
+      const cursosComDetalhesEQuantidades: ICarrinhoDetalhado[] = cursosBaseDoBanco.map(cursoDb => {
+        const itemDoInput = carrinhoInput.find(item => item.curso === cursoDb.id);
+        return {
+          ...cursoDb,
+          quantidade: itemDoInput ? itemDoInput.quantidade : 0,
+        };
+      }).filter(curso => curso.quantidade > 0);
+  
+      if (cursosComDetalhesEQuantidades.length === 0 && carrinhoInput.length > 0) {
+        throw new BadRequestException("Nenhum curso válido com quantidade maior que zero no carrinho.");
+      }
+  
+      const cursoInativoEncontrado = cursosComDetalhesEQuantidades.find(c => !c.ativo || c.fechado);
+      if (cursoInativoEncontrado) {
+        throw new BadRequestException(`O curso "${cursoInativoEncontrado.nome}" está inativo ou fechado e não pode ser adicionado ao carrinho.`);
+      }
+      console.log(nomeCupom);
+      const cupomInfo = await this.validarCupom(nomeCupom || "", idUsuario.toLocaleUpperCase(), cursosComDetalhesEQuantidades);
+  
+      const totalOriginalParaCarrinho = this.calcularTotal(cursosComDetalhesEQuantidades);
+      const paramsInsert: InsertCarrinhoParams = {
+        idUsuario,
+        totalOriginal: totalOriginalParaCarrinho,
+        methodoPagamento: 'pix',
+        cursos: cursosComDetalhesEQuantidades,
+        isCpf,
+        valorFinalComDesconto: cupomInfo.valorTotal,
+        nomeCupomAplicado: cupomInfo.nomeCupomAplicado,
+        valorDescontoCupom: cupomInfo.descontoAplicado,
       };
-    }).filter(curso => curso.quantidade > 0);
-
-    if (cursosComDetalhesEQuantidades.length === 0 && carrinhoInput.length > 0) {
-      throw new BadRequestException("Nenhum curso válido com quantidade maior que zero no carrinho.");
+  
+      const idCarrinho = await this.inserirCarrinho(paramsInsert);
+      const idCarrinhoToken = this.jwtService.sign({ id: idCarrinho });
+  
+      return { idCarrinho, cupomMensagem: cupomInfo, idCarrinhoToken };
+    }catch(error){
+      console.log(error)
+      throw error
     }
-
-    const cursoInativoEncontrado = cursosComDetalhesEQuantidades.find(c => !c.ativo || c.fechado);
-    if (cursoInativoEncontrado) {
-      throw new BadRequestException(`O curso "${cursoInativoEncontrado.nome}" está inativo ou fechado e não pode ser adicionado ao carrinho.`);
-    }
-
-    const cupomInfo = await this.validarCupom(nomeCupom || "", idUsuario, cursosComDetalhesEQuantidades);
-
-    const totalOriginalParaCarrinho = this.calcularTotal(cursosComDetalhesEQuantidades);
-    const paramsInsert: InsertCarrinhoParams = {
-      idUsuario,
-      totalOriginal: totalOriginalParaCarrinho,
-      methodoPagamento: 'pix',
-      cursos: cursosComDetalhesEQuantidades,
-      isCpf,
-      valorFinalComDesconto: cupomInfo.valorTotal,
-      nomeCupomAplicado: cupomInfo.nomeCupomAplicado,
-      valorDescontoCupom: cupomInfo.descontoAplicado,
-    };
-
-    const idCarrinho = await this.inserirCarrinho(paramsInsert);
-    const idCarrinhoToken = this.jwtService.sign({ id: idCarrinho });
-
-    return { idCarrinho, cupomMensagem: cupomInfo, idCarrinhoToken };
+   
   }
 }

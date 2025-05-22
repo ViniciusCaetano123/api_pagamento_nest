@@ -1,5 +1,5 @@
 
-import { Controller, Get, Query, UsePipes, ValidationPipe, UseGuards, Put, Param, Request } from '@nestjs/common';
+import { Controller, Get, Query, UsePipes, ValidationPipe, UseGuards, Put, Param, Request, Post } from '@nestjs/common';
 import { ComprovanteService } from './comprovante.service';
 import { FindComprovantesPaginadosDto } from './dto/find-comprovantes-paginados';
 import { AuthGuard } from '@nestjs/passport';
@@ -19,7 +19,7 @@ export class ComprovanteController {
     };
   }
 
-  @Put(':id')
+  @Post(':id')
   @UseGuards(AuthGuard('jwt'))
   async changeStatus(@Param('id') id: string, @Request() req) {
     const idPagamento = Number(id);
@@ -35,6 +35,13 @@ export class ComprovanteController {
   async getEstatisticasMensais() {
     const estatisticas = await this.comprovanteService.getEstatisticasMensaisComprovantes();
     return { dados: estatisticas };
+  }
+
+  @Get('top-dez-atividades-admin')
+  @UseGuards(AuthGuard('jwt'))
+  async getTopDezAtividadesAdmin() {
+    const topAtividades = await this.comprovanteService.getTopDezAtividadesAdmin();
+    return { dados: topAtividades };
   }
 
 

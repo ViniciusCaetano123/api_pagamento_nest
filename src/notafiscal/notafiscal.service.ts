@@ -6,25 +6,24 @@ import {
     InternalServerErrorException,
     NotFoundException,
     BadRequestException,
-    ConflictException, // <-- Importe ConflictException para envios duplicados
+    ConflictException, 
   } from '@nestjs/common';
   import * as sql from 'mssql';
-  import axios from 'axios'
+  import axios, { AxiosInstance } from 'axios'
   import { HttpService } from '@nestjs/axios';
-  import { ConfigService } from '@nestjs/config';
+  
   import { plainToClass } from 'class-transformer';
   import { validateOrReject } from 'class-validator';
   import { NotaFiscalApiResponse } from './interfaces/nota-fiscal-api-response.interface';
   import { CreateNotaFiscalApiDto } from './dto/create-nota-fiscal-api.dto';
-  import { firstValueFrom } from 'rxjs'; // Importe firstValueFrom aqui!
+  import { firstValueFrom } from 'rxjs';
   @Injectable()
   export class NotaFiscalService {
-    private readonly axiosInstance;
+    private readonly axiosInstance : AxiosInstance;
   
     constructor(
-        private readonly httpService: HttpService, // Injete HttpService
-        private readonly configService: ConfigService, // Injete ConfigService para acesso seguro a variáveis de ambiente
-      @Inject('MSSQL_CONNECTION') private readonly pool: sql.ConnectionPool,
+        private readonly httpService: HttpService, 
+        @Inject('MSSQL_CONNECTION') private readonly pool: sql.ConnectionPool,
     ) {
         this.axiosInstance = this.httpService.axiosRef;
     }
@@ -46,13 +45,13 @@ import {
           ee.razao_social, ce.ddd, ce.fone, ee.inscricao_estadual, ee.inscricao_municipal,
           cu.documento, ce.orgaopublico, ce.rua, ce.num, ce.bairro, ce.cidade, ce.uf, ce.cep,
           pc.valor_desconto, pc.status, ce.compl, cu.email,
-          cc.enviado_nf  -- <--- NOVA COLUNA AQUI
+          cc.enviado_nf  
         `;
         const selectColumnsAluno = `
           cc.id AS idComprovantes,
           ca.nome, ce.ddd, ce.fone, cu.documento, ce.orgaopublico, ce.rua, ce.num, ce.bairro,
           ce.cidade, ce.uf, ce.cep, pc.valor_desconto, pc.status, ce.compl, cu.email,
-          cc.enviado_nf  -- <--- NOVA COLUNA AQUI
+          cc.enviado_nf  
         `;
   
         const strQuery = isCnpj
@@ -70,7 +69,8 @@ import {
               JOIN Cursos.Comprovante cc ON cc.id_usuario = cu.id
               JOIN Pagamento.CarrinhosV2 pc ON cc.id_carrinho = pc.Id
               WHERE cc.id = @idComprovante`;
-       
+        
+              
   
         request.input('idComprovante', sql.Int, idComprovante);
         const result = await request.query(strQuery);
@@ -85,11 +85,17 @@ import {
         if (dadosRaw.enviado_nf === true) { 
           throw new ConflictException(`O comprovante ${idComprovante} já teve a nota fiscal emitida.`);
         }
-      
-  
-  
+        const strQueryDescricaoServico = `SELECT  cco.nome FROM Cursos.Curso cco
+              JOIN Pagamento.[Carrinhos.Cursos]  pcc ON  pcc.id_curso = cco.id            
+              JOIN Pagamento.CarrinhosV2 pcv ON pcv.Id = pcc.id_carrinho
+              where pcv.Id = @idCarrinho`;
+        request.input('idCarrinho', sql.Int, idComprovante);
+
+        const resultDescricaoServico = await request.query(strQueryDescricaoServico);
+        const descricaoServico = resultDescricaoServico.recordset.map(item => 'Ref ' + item.nome).join(', ');
+        
         const cepFormatado = dadosRaw.cep ? dadosRaw.cep.toString().padStart(8, '0') : '';
-        const ambiente = 'P';
+        const ambiente = 'H';
   
         const dadosParaValidacao = {
           ambiente: ambiente,
@@ -109,7 +115,7 @@ import {
           enderecouf: dadosRaw.uf || '',
           enderecocep: cepFormatado,
           servicovalor: dadosRaw.valor_desconto !== undefined && dadosRaw.valor_desconto !== null ? dadosRaw.valor_desconto : 1,
-          servicodescricao: 'Prestação de Cursos',
+          servicodescricao: descricaoServico,
         };
   
         const notaFiscalApiDto = plainToClass(CreateNotaFiscalApiDto, dadosParaValidacao);
@@ -126,7 +132,7 @@ import {
           throw new BadRequestException(`Dados da nota fiscal inválidos: ${validationErrors.join('; ')}`);
         }
         if (error instanceof NotFoundException || error instanceof ConflictException) {
-          throw error; // Propagar exceções HTTP específicas
+          throw error;
         }
         throw new InternalServerErrorException('Ocorreu um erro ao gerar os dados da nota fiscal.');
       }
@@ -134,10 +140,13 @@ import {
     
     async getAllNotasFiscaisFromExternalApi() {
         try {
-        // Se a base URL retornar uma lista, pode ser apenas `this.axiosInstance.get('')`
-        // Ou se houver um endpoint específico para listar, como `/list`
-        const response = await firstValueFrom( this.httpService.get<NotaFiscalApiResponse[]>('')); // Ajuste o endpoint se for diferente de '/'
-        return response.data;
+       
+        const response = await firstValueFrom( this.httpService.get<NotaFiscalApiResponse[]>('')); 
+        const notasFiscais = response.data;
+       
+        notasFiscais.sort((a, b) => b.id - a.id);
+  
+        return notasFiscais;
         } catch (error) {
         console.error('Erro ao listar notas fiscais da API externa:', error);
         if (axios.isAxiosError(error)) {
@@ -177,8 +186,7 @@ import {
       let contentNotaFiscal: CreateNotaFiscalApiDto;
       try {
         
-        contentNotaFiscal = await this.gerarJsonNotaFiscal(idComprovante, documento);
-        console.log('Conteúdo da Nota Fiscal a ser enviado:', contentNotaFiscal);
+        contentNotaFiscal = await this.gerarJsonNotaFiscal(idComprovante, documento);     
         
         const response = await firstValueFrom( this.httpService.post('', contentNotaFiscal));
       
@@ -188,8 +196,6 @@ import {
       } catch (error) {
         console.error('Erro no fluxo de envio de nota fiscal:', error);
         if (axios.isAxiosError(error)) {
-          console.error('Status do erro Axios:', error.response?.status);
-          console.error('Dados do erro Axios:', error.response?.data);
           throw new InternalServerErrorException(
             `Erro ao se comunicar com a API externa de NF: ${error.message}. Detalhes: ${JSON.stringify(error.response?.data || error.message)}`,
           );
@@ -207,8 +213,7 @@ import {
         const request = this.pool.request();
         await request
           .input('idComprovante', sql.Int, idComprovante)
-          .query(`UPDATE Cursos.Comprovante SET enviado_nf = 1 WHERE id = @idComprovante`);
-        console.log(`Comprovante ${idComprovante} marcado como nota fiscal enviada.`);
+          .query(`UPDATE Cursos.Comprovante SET enviado_nf = 1 WHERE id = @idComprovante`);       
       } catch (dbError) {
         console.error(`Erro ao marcar comprovante ${idComprovante} como enviado:`, dbError);
         
